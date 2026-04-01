@@ -2,6 +2,8 @@
 app/pages/admin.py  —  Admin dashboard: approvals, user management, app access
 """
 
+import importlib
+
 import streamlit as st
 from app.components.sidebar import render_sidebar
 from app.services.admin_service import AdminService
@@ -37,7 +39,7 @@ def render_admin_dashboard():
     divider()
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs(["🕐 Pending Approvals", "👥 User Management", "📋 Audit Log"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🕐 Pending Approvals", "👥 User Management", "📋 Audit Log", "🧪 App Preview"])
 
     # ───────────────────────── TAB 1: Pending Approvals ──────────────────────
     with tab1:
@@ -116,6 +118,10 @@ def render_admin_dashboard():
                 </div>
                 """, unsafe_allow_html=True)
 
+    # ───────────────────────── TAB 4: App Preview ────────────────────────────
+    with tab4:
+        _render_app_preview(svc)
+
 
 # ── User row with app access manager ─────────────────────────────────────────
 
@@ -179,3 +185,81 @@ def _render_user_row(user, svc: AdminService, admin_id: int):
                                      use_container_width=True, type="primary"):
                             svc.grant_app_access(user.id, app["id"], admin_id)
                             st.rerun()
+
+
+# ── Admin app preview ─────────────────────────────────────────────────────────
+
+def _render_app_preview(svc: AdminService):
+    """
+    Lets the admin test any registered app inline without granting user access.
+    The app's render() is called directly — no session or access-control checks.
+    """
+    apps = svc.get_available_apps()
+
+    if not apps:
+        st.info("No apps are currently registered and enabled.")
+        return
+
+    st.markdown(
+        "Select an app below to preview it exactly as a user would see it. "
+        "This does **not** affect any user's access."
+    )
+
+    # Build label → app mapping
+    app_options = {f"{a['icon']}  {a['name']}": a for a in apps}
+    chosen_label = st.selectbox(
+        "Choose an app to preview",
+        options=list(app_options.keys()),
+        index=0,
+    )
+    chosen_app = app_options[chosen_label]
+
+    divider()
+
+    # Admin preview banner
+    st.markdown(
+        f"""
+        <div style="
+            background: rgba(251,191,36,0.08);
+            border: 1px solid rgba(251,191,36,0.4);
+            border-radius: 8px;
+            padding: 0.6rem 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.83rem;
+            color: #fbbf24;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        ">
+            🧪 <strong>Admin Preview Mode</strong> &nbsp;·&nbsp;
+            Previewing <strong>{chosen_app['name']}</strong> &nbsp;·&nbsp;
+            Changes made here (e.g. file uploads) are temporary and session-scoped.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Dynamically load and call render()
+    try:
+        module = importlib.import_module(chosen_app["module_path"])
+    except ModuleNotFoundError as exc:
+        st.error(f"Module not found: `{chosen_app['module_path']}`  \n`{exc}`")
+        st.caption("Make sure the file exists at the correct path inside `app/apps/`.")
+        return
+
+    render_fn = getattr(module, "render", None)
+
+    if render_fn is None or not callable(render_fn):
+        st.error(
+            f"`{chosen_app['module_path']}` has no `render()` function.  \n"
+            "Add one to activate this app."
+        )
+        return
+
+    # Run the app inside a visual boundary
+    with st.container():
+        try:
+            render_fn()
+        except Exception as exc:
+            st.error(f"App raised an error during preview:  \n```\n{exc}\n```")
+            st.caption("Fix the error in the app module and reload.")
