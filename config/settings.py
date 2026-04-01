@@ -70,7 +70,7 @@ AVAILABLE_APPS = [
     },
     {
     "id":          "validation_js_generator",
-    "name":        "Validation JS Generator",
+    "name":        "Survey Validation Config Builder",
     "description": "Convert a survey-spec CSV/Excel into a Qualtrics validationConfig JS object",
     "icon":        "📊",
     "module_path": "app.apps.validation_js_generator",
