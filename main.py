@@ -11,7 +11,7 @@ from app.utils.page_router import route_page
 from app.utils.ui_helpers import apply_global_styles
 
 st.set_page_config(
-    page_title="NexusOps | Enterprise Dashboard",
+    page_title="Viplava Foundry | Enterprise Dashboard",
     page_icon="⬡",
     layout="wide",
     initial_sidebar_state="expanded",
