@@ -25,7 +25,7 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin@1234")
 ADMIN_NAME     = "System Administrator"
 
 # ── Branding ──────────────────────────────────────────────────────────────────
-APP_NAME    = "NexusOps"
+APP_NAME    = "Viplava Foundry "
 APP_VERSION = "1.0.0"
 APP_TAGLINE = "Enterprise Automation Platform"
 
