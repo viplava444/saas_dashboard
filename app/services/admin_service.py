@@ -6,7 +6,7 @@ from typing import List
 from config.settings import STATUS_APPROVED, STATUS_REJECTED, STATUS_REVOKED, AVAILABLE_APPS
 from app.models.user import UserDAO, User
 from app.models.audit import AuditDAO
-
+from app.services import sheets_sync
 
 class AdminService:
 
