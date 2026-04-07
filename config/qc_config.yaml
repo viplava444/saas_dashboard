@@ -1,0 +1,118 @@
+# =============================================================================
+# survey_scrubber — Default QC Configuration
+# =============================================================================
+# "Convention by default, configuration by override."
+#
+# All values here can be overridden by a user-supplied config file passed
+# via --config on the CLI, or by the Streamlit UI.  Only the keys you want
+# to change need to be present in the override file; the rest are inherited.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Column name mapping
+# Map logical names → exact column headers in your survey file.
+# ---------------------------------------------------------------------------
+columns:
+  response_id:  "ResponseId"
+  ip:           "IPAddress"
+  duration:     "Duration (in seconds)"
+  identifier:   "identifier"        # used for duplicate-identifier check
+  gc:           "gc"
+  start_date:   "StartDate"
+  end_date:     "EndDate"
+  status:       "Status"
+  progress:     "Progress"
+  finished:     "Finished"
+  recorded_date: "RecordedDate"
+
+# ---------------------------------------------------------------------------
+# GC (quality-control flag) filter
+#   operator: one of  =  !=  in  not_in  >=  <=  >  <
+#   value:    scalar, or list when operator is "in" / "not_in"
+# ---------------------------------------------------------------------------
+gc_filter:
+  column:   "gc"          # overrides columns.gc if set explicitly
+  operator: "="
+  value:    1
+
+# ---------------------------------------------------------------------------
+# Speeder thresholds
+# Each entry produces one Excel sheet.  Add or remove entries freely.
+# threshold_minutes: upper bound (inclusive) to flag as a speeder.
+# ---------------------------------------------------------------------------
+speeder_thresholds:
+  - label:              "Speeder - <=5 min"
+    threshold_minutes:  5.0
+  - label:              "Speeder - <=4 min"
+    threshold_minutes:  4.0
+
+# ---------------------------------------------------------------------------
+# Open-ended (OE) text scrubbing
+# ---------------------------------------------------------------------------
+oe_scrubbing:
+  enabled:          true
+  # "auto"  → scrub every column whose name ends with _TEXT
+  # "list"  → scrub only the columns listed under `columns`
+  mode:             "auto"
+  columns:          []          # used when mode = "list"
+
+  min_length:       3           # flag responses shorter than this (chars)
+  max_length:       5000        # flag suspiciously long responses
+
+  profanity_filter: true        # flag responses containing profanity
+  gibberish_check:  true        # flag high-entropy / keyboard-mash strings
+  language_check:   false       # flag non-English responses (requires langdetect)
+
+  # Gibberish: flag if ratio of unique chars to total chars exceeds this
+  gibberish_unique_char_ratio: 0.85
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+duplicates:
+  check_ip:         true
+  check_identifier: true
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output:
+  excel:            true
+  csv:              true
+  output_dir:       "output"
+  excel_filename:   "survey_QC_report.xlsx"
+  csv_filename:     "survey_cleaned.csv"
+  summary_filename: "qc_summary.json"
+
+# ---------------------------------------------------------------------------
+# Duplicate-highlighting colour palette (hex, no #)
+# ---------------------------------------------------------------------------
+duplicate_colors:
+  - "FFB6C1"
+  - "FFD700"
+  - "98FB98"
+  - "87CEEB"
+  - "DDA0DD"
+  - "F0E68C"
+  - "FFB347"
+  - "B0E0E6"
+  - "FFDAB9"
+  - "E6E6FA"
+
+# ---------------------------------------------------------------------------
+# Learning / feedback loop
+# ---------------------------------------------------------------------------
+learning:
+  enabled:          true
+  storage_path:     "learning/feedback_store.json"
+  # Minimum number of "invalid" feedback entries before a pattern is
+  # promoted to an auto-reject rule.
+  auto_promote_threshold: 5
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level:      "INFO"        # DEBUG | INFO | WARNING | ERROR
+  log_file:   "logs/qc_run.log"
+  console:    true
