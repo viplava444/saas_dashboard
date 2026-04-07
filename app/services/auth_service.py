@@ -2,19 +2,28 @@
 app/services/auth_service.py  —  Authentication business logic
 """
 
-import hashlib, secrets, re
-from datetime import datetime, timedelta
-from typing import Optional, Tuple
-from datetime import datetime, timezone
+import hashlib
+import re
+import secrets
+from datetime import datetime, timedelta, timezone
+from typing import Tuple
+
+from app.models.audit import AuditDAO
+from app.models.database import get_db, init_db
+from app.models.user import User, UserDAO
 from app.services import sheets_sync
 from config.settings import (
-    PASSWORD_MIN_LENGTH, MAX_LOGIN_ATTEMPTS,
-    LOCKOUT_MINUTES, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME,
-    ROLE_ADMIN, ROLE_USER, STATUS_APPROVED, STATUS_PENDING,
+    ADMIN_EMAIL,
+    ADMIN_NAME,
+    ADMIN_PASSWORD,
+    LOCKOUT_MINUTES,
+    MAX_LOGIN_ATTEMPTS,
+    PASSWORD_MIN_LENGTH,
+    ROLE_ADMIN,
+    ROLE_USER,
+    STATUS_APPROVED,
+    STATUS_PENDING,
 )
-from app.models.database import init_db
-from app.models.user import UserDAO, User
-from app.models.audit import AuditDAO
 
 
 class AuthService:
@@ -25,125 +34,157 @@ class AuthService:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-   # Replace register():
     @staticmethod
-    def register(email: str, full_name: str, password: str) -> tuple[bool, str]:
+    def register(email: str, full_name: str, password: str) -> Tuple[bool, str]:
+        """
+        Register a new user.
+
+        Validates inputs, checks for duplicate email, hashes the password
+        with PBKDF2-SHA256, inserts into local SQLite, then mirrors the
+        new user to Google Sheets (best-effort).
+
+        Returns (success: bool, message: str).
+        """
         email     = email.strip().lower()
         full_name = full_name.strip()
 
-        if not email or not full_name or not password:
-            return False, "All fields are required."
-        if len(password) < 8:
-            return False, "Password must be at least 8 characters."
+        # ── Validation ────────────────────────────────────────────────
+        valid, msg = AuthService._validate_registration(email, full_name, password)
+        if not valid:
+            return False, msg
+
         if UserDAO.get_by_email(email):
             return False, "An account with this email already exists."
 
+        # ── Hash + insert ─────────────────────────────────────────────
         password_hash = AuthService._hash_password(password)
         now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
         with get_db() as conn:
             cur = conn.execute(
-                '''INSERT INTO users
+                """INSERT INTO users
                    (email, full_name, password_hash, role, status,
                     failed_logins, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?)''',
-                (email, full_name, password_hash, "user", "pending", 0, now, now),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (email, full_name, password_hash, ROLE_USER,
+                 STATUS_PENDING, 0, now, now),
             )
             user_id = cur.lastrowid
             conn.commit()
 
-        # Mirror to Sheets (best-effort)
+        # ── Mirror to Sheets (best-effort) ────────────────────────────
         sheets_sync.push_user({
             "email":         email,
             "full_name":     full_name,
             "password_hash": password_hash,
-            "role":          "user",
-            "status":        "pending",
+            "role":          ROLE_USER,
+            "status":        STATUS_PENDING,
             "failed_logins": 0,
             "created_at":    now,
             "updated_at":    now,
         })
         sheets_sync.push_audit(
-            actor_id=user_id, actor_email=email,
-            action="user_registered", target=email,
+            actor_id    = user_id,
+            actor_email = email,
+            action      = "user_registered",
+            target      = email,
         )
 
         return True, "Registration successful. Awaiting admin approval."
 
-    # Replace login() to track last_login, last_ip, failed_logins:
     @staticmethod
-    def login(email: str, password: str, ip: str = "") -> tuple[bool, str, dict | None]:
-        '''
-        Returns (success, message, user_info_dict | None).
-        user_info_dict contains: id, email, full_name, role, status
-        '''
+    def login(email: str, password: str, ip: str = "") -> Tuple[bool, str]:
+        """
+        Validate credentials and return (success: bool, message: str).
+
+        Tracks failed_logins, locked_until, last_login, and last_ip in
+        both local SQLite and Google Sheets on every attempt.
+
+        Return signature is (bool, str) — unchanged from original — so
+        existing login page callers require no updates.
+        """
         email = email.strip().lower()
         user  = UserDAO.get_by_email(email)
         now   = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
         if not user:
-            return False, "Invalid credentials.", None
+            return False, "Invalid credentials."
 
-        # Check lockout
-        if user.locked_until and user.locked_until > now:
-            return False, f"Account locked until {user.locked_until[:19]} UTC.", None
+        # ── Lockout check ─────────────────────────────────────────────
+        locked_until = getattr(user, "locked_until", None)
+        if locked_until and str(locked_until) > now:
+            return False, f"Account locked until {str(locked_until)[:19]} UTC."
 
+        # ── Approval check ────────────────────────────────────────────
         if user.status != STATUS_APPROVED:
-            return False, "Account not yet approved by admin.", None
+            return False, "Account not yet approved by admin."
 
+        # ── Wrong password ────────────────────────────────────────────
         if not AuthService._verify_password(password, user.password_hash):
-            new_fails = (user.failed_logins or 0) + 1
-            locked_until = None
-            if new_fails >= 5:
-                from datetime import timedelta
-                locked_until = (
-                    datetime.now(tz=timezone.utc) + timedelta(minutes=15)
+            failed_logins = getattr(user, "failed_logins", 0) or 0
+            new_fails     = failed_logins + 1
+            new_locked    = None
+
+            if new_fails >= MAX_LOGIN_ATTEMPTS:
+                new_locked = (
+                    datetime.now(tz=timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)
                 ).strftime("%Y-%m-%dT%H:%M:%S")
 
             with get_db() as conn:
                 conn.execute(
-                    "UPDATE users SET failed_logins=?, locked_until=?, updated_at=? WHERE id=?",
-                    (new_fails, locked_until, now, user.id),
+                    """UPDATE users
+                       SET failed_logins = ?, locked_until = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (new_fails, new_locked, now, user.id),
                 )
                 conn.commit()
 
             sheets_sync.push_user({
-                "email": email, "failed_logins": new_fails,
-                "locked_until": locked_until or "", "updated_at": now,
+                "email":         email,
+                "failed_logins": new_fails,
+                "locked_until":  new_locked or "",
+                "updated_at":    now,
             })
-            msg = "Invalid credentials."
-            if locked_until:
-                msg = "Too many failed attempts. Account locked for 15 minutes."
-            return False, msg, None
 
-        # Successful login — reset counters, record metadata
+            if new_locked:
+                return False, f"Too many failed attempts. Account locked for {LOCKOUT_MINUTES} minutes."
+            return False, "Invalid credentials."
+
+        # ── Successful login ──────────────────────────────────────────
         with get_db() as conn:
             conn.execute(
-                "UPDATE users SET failed_logins=0, locked_until=NULL, "
-                "last_login=?, last_ip=?, updated_at=? WHERE id=?",
+                """UPDATE users
+                   SET failed_logins = 0, locked_until = NULL,
+                       last_login = ?, last_ip = ?, updated_at = ?
+                   WHERE id = ?""",
                 (now, ip, now, user.id),
             )
             conn.commit()
 
         sheets_sync.push_user({
-            "email": email, "failed_logins": 0,
-            "locked_until": "", "last_login": now,
-            "last_ip": ip, "updated_at": now,
+            "email":         email,
+            "failed_logins": 0,
+            "locked_until":  "",
+            "last_login":    now,
+            "last_ip":       ip,
+            "updated_at":    now,
         })
         sheets_sync.push_audit(
-            actor_id=user.id, actor_email=email,
-            action="user_login", target=email, ip_address=ip,
+            actor_id    = user.id,
+            actor_email = email,
+            action      = "user_login",
+            target      = email,
+            ip_address  = ip,
         )
 
-        return True, "Login successful.", {
-            "id": user.id, "email": user.email,
-            "full_name": user.full_name, "role": user.role,
-        }
+        return True, "Login successful."
+
     # ── Validation ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _validate_registration(email: str, full_name: str, password: str
-                                ) -> Tuple[bool, str]:
+    def _validate_registration(
+        email: str, full_name: str, password: str
+    ) -> Tuple[bool, str]:
         if not email or "@" not in email:
             return False, "Please enter a valid email address."
         if not full_name or len(full_name.strip()) < 2:
@@ -156,7 +197,7 @@ class AuthService:
             return False, "Password must contain at least one number."
         return True, ""
 
-    # ── Password Hashing (PBKDF2-SHA256) ──────────────────────────────────────
+    # ── Password Hashing (PBKDF2-SHA256, 260k iterations) ─────────────────────
 
     @staticmethod
     def _hash_password(password: str) -> str:
@@ -176,10 +217,11 @@ class AuthService:
     # ── Admin Bootstrap ────────────────────────────────────────────────────────
 
     def _bootstrap_admin(self):
+        """Create the default admin account if it does not yet exist."""
         if not UserDAO.get_by_email(ADMIN_EMAIL):
             pw_hash = self._hash_password(ADMIN_PASSWORD)
             UserDAO.create(
                 ADMIN_EMAIL, ADMIN_NAME, pw_hash,
-                role=ROLE_ADMIN, status=STATUS_APPROVED
+                role=ROLE_ADMIN, status=STATUS_APPROVED,
             )
             AuditDAO.log("admin_bootstrapped", target=ADMIN_EMAIL)
