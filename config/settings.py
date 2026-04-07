@@ -77,4 +77,15 @@ AVAILABLE_APPS = [
     "category":    "Survey Tools",
     "enabled":     True,
 },
+    {
+    "id":          "survey_scrubber",
+    "name":        "Survey QC Scrubber",
+    "description": "Config-driven survey data QC: duplicate detection, "
+                   "speeder flagging, open-ended text scrubbing, and "
+                   "human-in-the-loop review with a learning store.",
+    "icon":        "🔬",
+    "module_path": "app.apps.survey_scrubber",
+    "category":    "Data Quality",
+    "enabled":     True,
+},
 ]
